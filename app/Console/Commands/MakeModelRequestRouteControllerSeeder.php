@@ -14,7 +14,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
     public function handle()
     {
         $tableName = $this->argument('table');
-        $migrationPath = $this->findMigrationFile( $tableName);
+        $migrationPath = $this->findMigrationFile($tableName);
 
         if (!$migrationPath) $this->error('Migration file not found!');
 
@@ -87,7 +87,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
         // Generate and save Model with capitalized database name
         file_put_contents(
             app_path("Models/{$modelName}.php"),
-            $this->generateModelContent( $modelName)
+            $this->generateModelContent($modelName)
         );
 
         // Create and save Request (keeping original case)
@@ -97,7 +97,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
 
         file_put_contents(
             app_path("Http/Requests/{$modelName}Request.php"),
-            $this->generateRequestContent( $modelName, $columns)
+            $this->generateRequestContent($modelName, $columns)
         );
 
         // Create and save Controller (keeping original case)
@@ -123,7 +123,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
 
         $this->updateMasterSeeder($modelName);
 
-        $this->addRoutes( $modelName);
+        $this->addRoutes($modelName);
 
 
         $this->info('Model, Request, Controller, Seeder, Routes created successfully!');
@@ -208,7 +208,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
     }
 
 
-    private function findMigrationFile( $tableName)
+    private function findMigrationFile($tableName)
     {
         $migrationDir = database_path("migrations");
 
@@ -304,7 +304,9 @@ class {$modelName}Controller extends Controller
 
     public function index(Request \$request)
     {
-        \$query = \$this->model->query()->select('{$tableName}.*');
+         \return \$this->model->query()->select('{$tableName}.*')
+        ->search(\$request->input('search'),[])
+        ->paginate(\$request->input('per_page',15));
 
     }
 
@@ -338,7 +340,7 @@ PHP;
     }
 
 
-    private function generateSeederContent( $modelName, $columns)
+    private function generateSeederContent($modelName, $columns)
     {
         $namespace = "Database\\Seeders";
         $modelNamespace = "App\\Models\\{$modelName}";
@@ -432,62 +434,62 @@ PHP;
         return $formatted;
     }
 
-private function updateMasterSeeder($modelName)
-{
-    $seederPath = database_path('seeders/DatabaseSeeder.php');
+    private function updateMasterSeeder($modelName)
+    {
+        $seederPath = database_path('seeders/DatabaseSeeder.php');
 
-    if (!file_exists($seederPath)) {
-        $this->error('DatabaseSeeder.php not found!');
-        return;
-    }
+        if (!file_exists($seederPath)) {
+            $this->error('DatabaseSeeder.php not found!');
+            return;
+        }
 
-    $content = file_get_contents($seederPath);
+        $content = file_get_contents($seederPath);
 
-    // Check if the seeder is already included
-    if (str_contains($content, "{$modelName}Seeder::class")) {
-        return; // Already added
-    }
+        // Check if the seeder is already included
+        if (str_contains($content, "{$modelName}Seeder::class")) {
+            return; // Already added
+        }
 
-    // Add `use` statement if missing
-    $useStatement = "use Database\\Seeders\\{$modelName}Seeder;\n";
-    if (!str_contains($content, $useStatement)) {
-        // Insert after the opening <?php and any existing use statements
-        if (preg_match('/<\?php\s*(?:\n|.)*?namespace [^;]+;(\s*)/', $content, $matches, PREG_OFFSET_CAPTURE)) {
-            $insertPos = $matches[0][1] + strlen($matches[0][0]);
-            $content = substr_replace($content, $useStatement, $insertPos, 0);
+        // Add `use` statement if missing
+        $useStatement = "use Database\\Seeders\\{$modelName}Seeder;\n";
+        if (!str_contains($content, $useStatement)) {
+            // Insert after the opening <?php and any existing use statements
+            if (preg_match('/<\?php\s*(?:\n|.)*?namespace [^;]+;(\s*)/', $content, $matches, PREG_OFFSET_CAPTURE)) {
+                $insertPos = $matches[0][1] + strlen($matches[0][0]);
+                $content = substr_replace($content, $useStatement, $insertPos, 0);
+            } else {
+                // Fallback: insert just after <?php
+                $content = preg_replace('/<\?php\s*/', "<?php\n{$useStatement}", $content, 1);
+            }
+        }
+
+        // Try to find an existing $this->call([...]);
+        if (preg_match('/\$this->call\(\[([\s\S]*?)\]\);/', $content, $matches)) {
+            $existing = $matches[1];
+            // Check if already present (shouldn't be, but double check)
+            if (strpos($existing, "{$modelName}Seeder::class") === false) {
+                // Add the new seeder
+                $updated = rtrim($existing) . "\n            {$modelName}Seeder::class,\n        ";
+                $content = str_replace($matches[0], "\$this->call([\n        {$updated}\n    ]);", $content);
+            }
         } else {
-            // Fallback: insert just after <?php
-            $content = preg_replace('/<\?php\s*/', "<?php\n{$useStatement}", $content, 1);
+            // No $this->call([...]); found, so append it to the end of the run() method
+            if (preg_match('/public function run\(\)\s*:\s*void\s*\{([\s\S]*?)\n\s*\}/', $content, $matches)) {
+                $runBody = rtrim($matches[1]);
+                $newRunBody = $runBody . "\n\n        \$this->call([\n            {$modelName}Seeder::class,\n        ]);";
+                $content = str_replace($matches[0], "public function run(): void\n    {{$newRunBody}\n    }", $content);
+            } else {
+                // Fallback: replace the run() method entirely
+                $content = preg_replace(
+                    '/public function run\(\)[^{]*\{[^}]*\}/',
+                    "public function run(): void\n    {\n        \$this->call([\n            {$modelName}Seeder::class,\n        ]);\n    }",
+                    $content
+                );
+            }
         }
-    }
 
-    // Try to find an existing $this->call([...]);
-    if (preg_match('/\$this->call\(\[([\s\S]*?)\]\);/', $content, $matches)) {
-        $existing = $matches[1];
-        // Check if already present (shouldn't be, but double check)
-        if (strpos($existing, "{$modelName}Seeder::class") === false) {
-            // Add the new seeder
-            $updated = rtrim($existing) . "\n            {$modelName}Seeder::class,\n        ";
-            $content = str_replace($matches[0], "\$this->call([\n        {$updated}\n    ]);", $content);
-        }
-    } else {
-        // No $this->call([...]); found, so append it to the end of the run() method
-        if (preg_match('/public function run\(\)\s*:\s*void\s*\{([\s\S]*?)\n\s*\}/', $content, $matches)) {
-            $runBody = rtrim($matches[1]);
-            $newRunBody = $runBody . "\n\n        \$this->call([\n            {$modelName}Seeder::class,\n        ]);";
-            $content = str_replace($matches[0], "public function run(): void\n    {{$newRunBody}\n    }", $content);
-        } else {
-            // Fallback: replace the run() method entirely
-            $content = preg_replace(
-                '/public function run\(\)[^{]*\{[^}]*\}/',
-                "public function run(): void\n    {\n        \$this->call([\n            {$modelName}Seeder::class,\n        ]);\n    }",
-                $content
-            );
-        }
+        file_put_contents($seederPath, $content);
     }
-
-    file_put_contents($seederPath, $content);
-}
 
 
 
