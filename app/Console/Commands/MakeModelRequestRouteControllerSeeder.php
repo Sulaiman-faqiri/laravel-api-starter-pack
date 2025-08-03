@@ -84,11 +84,15 @@ class MakeModelRequestRouteControllerSeeder extends Command
             mkdir(app_path("Models"), 0777, true);
         }
 
-        // Generate and save Model with capitalized database name
+        // Generate and save Model with relationships
         file_put_contents(
             app_path("Models/{$modelName}.php"),
-            $this->generateModelContent($modelName)
+            $this->generateModelContent($modelName, $columns)
         );
+
+        // Generate reverse relationships in related models
+        $this->generateReverseRelationships($modelName, $columns);
+
 
         // Create and save Request (keeping original case)
         if (!file_exists(app_path("Http/Requests"))) {
@@ -164,7 +168,7 @@ class MakeModelRequestRouteControllerSeeder extends Command
             $type === 'month' => ['integer', 'min:1', 'max:12'],
             $type === 'json' => ['json'],
             $type === 'array' => ['array'],
-            $type === 'foreignId' => ["exists:{$database}.{$table},id"],
+            $type === 'foreignId' => ["exists:{$table},id"],
             $type === 'unsignedBigInteger' => ['integer', 'min:0', 'max:18446744073709551615'],
             $type === 'uuid' => ['uuid'],
             default => []
@@ -226,23 +230,144 @@ class MakeModelRequestRouteControllerSeeder extends Command
         return null;
     }
 
-    private function generateModelContent($modelName)
+    private function generateModelContent($modelName, $columns)
     {
         $namespace = "App\\Models";
+
+        // Generate relationships based on foreign keys
+        $relationships = $this->generateRelationships($modelName, $columns);
+
         return <<<PHP
-<?php
+    <?php
 
-namespace {$namespace};
-use App\Traits\HasBaseBuilder;
-use Illuminate\Database\Eloquent\Model;
+    namespace {$namespace};
+    use App\Traits\HasBaseBuilder;
+    use Illuminate\Database\Eloquent\Model;
 
-class {$modelName} extends Model
-{
-    use HasBaseBuilder;
+    class {$modelName} extends Model
+    {
+        use HasBaseBuilder;
 
-    protected \$guarded = [];
-}
-PHP;
+        protected \$guarded = [];
+
+    {$relationships}
+    }
+    PHP;
+    }
+
+    private function generateRelationships($modelName, $columns)
+    {
+        $relationships = [];
+
+        foreach ($columns as $column => $columnInfo) {
+            if ($columnInfo['type'] === 'foreignId') {
+                $relatedModel = $this->getRelatedModelName($column, $columnInfo['table']);
+                $relationshipName = $this->getRelationshipName($column);
+
+                // Generate belongsTo relationship
+                $relationships[] = $this->generateBelongsToRelationship($relationshipName, $relatedModel, $column);
+            }
+        }
+
+        return implode("\n\n", $relationships);
+    }
+
+    private function getRelatedModelName($column, $table)
+    {
+        // Convert table name to model name
+        // e.g., 'product_categories' -> 'ProductCategory'
+        return Str::studly(Str::singular($table));
+    }
+
+    private function getRelationshipName($column)
+    {
+        // Convert foreign key to relationship name
+        // e.g., 'product_category_id' -> 'productCategory'
+        // e.g., 'currency_id' -> 'currency'
+        // e.g., 'default_unit_id' -> 'unit'
+        // e.g., 'user_id' -> 'user'
+        // e.g., 'created_by' -> 'createdBy'
+
+        $name = str_replace('_id', '', $column);
+
+        // Handle special cases
+        if ($name === 'default_unit') {
+            return 'unit';
+        }
+
+        // Convert snake_case to camelCase
+        return Str::camel($name);
+    }
+
+    private function generateBelongsToRelationship($relationshipName, $relatedModel, $foreignKey)
+    {
+        return <<<PHP
+        public function {$relationshipName}()
+        {
+            return \$this->belongsTo({$relatedModel}::class, '{$foreignKey}');
+        }
+    PHP;
+    }
+
+    // Add this method to generate reverse relationships in related models
+    private function generateReverseRelationships($modelName, $columns)
+    {
+        foreach ($columns as $column => $columnInfo) {
+            if ($columnInfo['type'] === 'foreignId') {
+                $relatedModelName = $this->getRelatedModelName($column, $columnInfo['table']);
+                $this->addReverseRelationship($relatedModelName, $modelName, $column);
+            }
+        }
+    }
+
+    private function addReverseRelationship($relatedModelName, $currentModelName, $foreignKey)
+    {
+        $relatedModelPath = app_path("Models/{$relatedModelName}.php");
+
+        if (!file_exists($relatedModelPath)) {
+            return; // Related model doesn't exist yet
+        }
+
+        $content = file_get_contents($relatedModelPath);
+
+        // Check if relationship already exists
+        if (str_contains($content, "hasMany({$currentModelName}::class")) {
+            return;
+        }
+
+        // Generate reverse relationship
+        $reverseRelationship = $this->generateReverseRelationship($currentModelName, $foreignKey);
+
+        // Insert before the closing brace
+        $content = preg_replace(
+            '/}(\s*)$/',
+            "\n\n{$reverseRelationship}\n}",
+            $content
+        );
+
+        file_put_contents($relatedModelPath, $content);
+    }
+
+    private function generateReverseRelationship($relatedModel, $foreignKey)
+    {
+        $relationshipName = $this->getReverseRelationshipName($relatedModel, $foreignKey);
+
+        return <<<PHP
+        public function {$relationshipName}()
+        {
+            return \$this->hasMany({$relatedModel}::class, '{$foreignKey}');
+        }
+    PHP;
+    }
+
+    private function getReverseRelationshipName($relatedModel, $foreignKey)
+    {
+        // Convert model name to plural relationship name
+        // e.g., 'Product' -> 'products'
+        // e.g., 'User' -> 'users'
+        // e.g., 'Order' -> 'orders'
+
+        return Str::plural(Str::camel(Str::singular($relatedModel)));
     }
 
     private function generateRequestContent($modelName, $columns)
@@ -304,7 +429,7 @@ class {$modelName}Controller extends Controller
 
     public function index(Request \$request)
     {
-         \return \$this->model->query()->select('{$tableName}.*')
+        return \$this->model->query()->select('{$tableName}.*')
         ->search(\$request->input('search'),[])
         ->paginate(\$request->input('per_page',15));
 
